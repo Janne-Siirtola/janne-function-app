@@ -67,5 +67,6 @@ jobs:
         with:
           app-name: 'janne-function-app'
           slot-name: 'Production'
-          package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+          package: '.'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_63F14CB6990442859D510AEC4647F77E }}
+          enable-oryx-build: true
