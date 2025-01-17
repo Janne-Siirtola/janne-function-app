@@ -1,4 +1,4 @@
 azure.functions
-pysftp
+paramiko
 pandas
 pytz
