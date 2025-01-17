@@ -3,7 +3,7 @@ import logging
 import azure.functions as func
 import os
 import tempfile
-import paramiko  # <-- Paramiko instead of pysftp
+import paramiko 
 import pandas as pd
 import pytz
 
