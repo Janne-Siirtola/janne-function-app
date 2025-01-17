@@ -1,6 +1,5 @@
 datetime
 logging
-json
 azure.functions
 os
 tempfile
