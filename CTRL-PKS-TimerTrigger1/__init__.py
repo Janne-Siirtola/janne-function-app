@@ -8,7 +8,7 @@ import pysftp
 import pandas as pd
 import pytz
 
-# "0 0 4 * * Mon  "
+# "0 0 4 * * Mon"
 
 class SFTP:
     def __init__(self, hostname: str, username: str, password: str, port: int):
