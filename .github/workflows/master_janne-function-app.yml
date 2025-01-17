@@ -70,3 +70,5 @@ jobs:
           package: '.'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_63F14CB6990442859D510AEC4647F77E }}
           enable-oryx-build: true
+          scm-do-build-during-deployment: true
+          remote-build: true
