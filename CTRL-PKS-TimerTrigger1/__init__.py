@@ -19,17 +19,21 @@ class SFTP:
         self.connect()
 
     def connect(self):
-        """Establish an SFTP connection using Paramiko."""
         try:
+            # Turn on debug logging
+            logging.basicConfig(level=logging.DEBUG)
+
             self.ssh_client = paramiko.SSHClient()
-            # Automatically add host keys from the remote server (not recommended in production)
             self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
             self.ssh_client.connect(
                 hostname=self.hostname,
                 username=self.username,
                 password=self.password,
-                port=self.port
+                port=self.port,
+                look_for_keys=False,
+                allow_agent=False,
+                banner_timeout=200,  # in case the server is slow to present auth banner
             )
 
             self.sftp_client = self.ssh_client.open_sftp()
@@ -169,7 +173,7 @@ def main(mytimer: func.TimerRequest) -> None:
     utc_timestamp = datetime.datetime.utcnow().replace(
         tzinfo=datetime.timezone.utc
     ).isoformat()
-
+    
     if mytimer.past_due:
         logging.info('The timer is past due!')
 
