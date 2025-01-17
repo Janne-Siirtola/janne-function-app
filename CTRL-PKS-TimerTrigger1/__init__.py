@@ -10,6 +10,7 @@ import pytz
 
 # "0 0 4 * * Mon"
 
+
 class SFTP:
     def __init__(self, hostname: str, username: str, password: str, port: int):
         self.hostname = hostname
@@ -102,12 +103,12 @@ class SFTP:
                 logging.info("Created 'history' directory.")
 
             source_path = remote_file
-            
+
             if add_timestamp:
                 destination_path = f"history/{self.get_timestamp()}_{remote_file}"
             else:
                 destination_path = f"history/{remote_file}"
-                
+
             logging.info(f"Renaming {source_path} to {destination_path}")
             self.rename(source_path, destination_path)
         except Exception as e:
@@ -124,16 +125,6 @@ class SFTP:
 
         # Format the time as required
         return finland_time.strftime("%Y-%m-%d_%H%M")
-
-
-def load_json(path):
-    """Load data from a JSON file."""
-    try:
-        with open(path, "r") as file:
-            return json.load(file)
-    except Exception as e:
-        logging.error(f"Error in load_json: {e}")
-        raise
 
 
 def convert_csv_to_xlsx(csv_file_path, encoding='utf-8'):
@@ -180,8 +171,6 @@ def main(mytimer: func.TimerRequest) -> None:
 
     if mytimer.past_due:
         logging.info('The timer is past due!')
-
-    data = load_json("config.json")
 
     vitec = SFTP(os.getenv("vitec_hostname"), os.getenv("vitec_username"),
                  os.getenv("vitec_password"), os.getenv("vitec_port"))
