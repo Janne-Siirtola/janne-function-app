@@ -3,13 +3,110 @@ import logging
 import azure.functions as func
 import os
 import tempfile
-import paramiko 
+import paramiko
 import pandas as pd
 import pytz
+import traceback
+
+def main(mytimer: func.TimerRequest) -> None:
+    # We'll collect all logs in this list:
+    log_messages = []
+
+    def log(msg: str):
+        """Append a log string to our in-memory list of messages."""
+        log_messages.append(msg)
+    
+    try:
+        # -----------------------------
+        # 1. MAIN LOGIC STARTS
+        # -----------------------------
+
+        # 1A. Timer logic
+        utc_timestamp = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc).isoformat()
+        if mytimer.past_due:
+            log("Timer is past due.")
+        
+        # 1B. Connect via Paramiko (wrapped in a helper class, see below)
+        vitec = SFTP(
+            hostname=os.getenv("vitec_hostname"),
+            username=os.getenv("vitec_username"),
+            password=os.getenv("vitec_password"),
+            port=int(os.getenv("vitec_port", 22)),
+            log_func=log  # pass in our log function
+        )
+
+        # 1C. Navigate to "JANNE/vantaa_tallenna_liite"
+        vitec.cwd("JANNE")
+        vitec.cwd("vantaa_tallenna_liite")
+
+        # 1D. List CSV files
+        csvlistdir = vitec.listdir()
+        csv_files = [file for file in csvlistdir if file.endswith('.csv')]
+        if not csv_files:
+            log("No .csv files found. Terminating...")
+            vitec.disconnect()
+            # Once done with everything successfully, output final log.
+            logging.info("\n".join(log_messages))
+            return
+
+        log(f"Found {len(csv_files)} CSV file(s): {csv_files}")
+
+        local_paths = []
+        for csv_file in csv_files:
+            local_path = os.path.join(tempfile.gettempdir(), csv_file)
+            vitec.get(csv_file, local_path)
+            local_paths.append(local_path)
+
+        # 1E. Convert CSV -> XLSX
+        new_xlsx_files = []
+        for local_path in local_paths:
+            xlsx_path, success = convert_csv_to_xlsx(local_path, encoding='ISO-8859-1', log_func=log)
+            if not success:
+                # If conversion fails, stop. But still do final log.
+                vitec.disconnect()
+                raise RuntimeError(f"CSV-to-XLSX conversion failed for {local_path}")
+            new_xlsx_files.append(xlsx_path)
+
+        # 1F. Move original CSVs to history
+        for csv_file in csv_files:
+            vitec.move_files_to_history(csv_file)
+
+        # 1G. Navigate to 'xlsx' folder and move old XLSX to history
+        vitec.cwd("xlsx")
+        old_xlsx_files = [f for f in vitec.listdir() if f.endswith('.xlsx')]
+        if old_xlsx_files:
+            log(f"Found {len(old_xlsx_files)} old .xlsx files. Moving to history: {old_xlsx_files}")
+            for xlsx_file in old_xlsx_files:
+                vitec.move_files_to_history(xlsx_file, add_timestamp=False)
+
+        # 1H. Upload new XLSX files
+        for xlsx_file in new_xlsx_files:
+            timestamped_name = f"{vitec.get_timestamp()}_{os.path.basename(xlsx_file)}"
+            vitec.put(xlsx_file, timestamped_name)
+
+        # 1I. Disconnect and finalize
+        vitec.disconnect()
+        log(f"Python timer trigger function completed at {utc_timestamp}")
+        
+        # -----------------------------
+        # 2. SUCCESS: OUTPUT LOG ONCE
+        # -----------------------------
+        logging.info("\n".join(log_messages))
+
+    except Exception as e:
+        # ----------------------------------------
+        # 3. FAILURE: OUTPUT LOG + STACK TRACE
+        # ----------------------------------------
+        log_messages.append("\n--- EXCEPTION TRACEBACK ---")
+        log_messages.append(traceback.format_exc())
+        logging.error("\n".join(log_messages))
+        # Optionally re-raise if you want the Azure Function to register as 'failed'
+        raise
 
 
 class SFTP:
-    def __init__(self, hostname: str, username: str, password: str, port: int):
+    def __init__(self, hostname: str, username: str, password: str, port: int, log_func):
+        self.log = log_func
         self.hostname = hostname
         self.username = username
         self.password = password
@@ -20,12 +117,9 @@ class SFTP:
 
     def connect(self):
         try:
-            # Turn on debug logging
-            logging.basicConfig(level=logging.DEBUG)
-
+            self.log("Connecting to SFTP...")
             self.ssh_client = paramiko.SSHClient()
             self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
             self.ssh_client.connect(
                 hostname=self.hostname,
                 username=self.username,
@@ -33,13 +127,12 @@ class SFTP:
                 port=self.port,
                 look_for_keys=False,
                 allow_agent=False,
-                banner_timeout=200,  # in case the server is slow to present auth banner
+                banner_timeout=200,
             )
-
             self.sftp_client = self.ssh_client.open_sftp()
-            logging.info("Connection successfully established via Paramiko!")
+            self.log("Connection successfully established via Paramiko!")
         except Exception as e:
-            logging.error(f"Error in connect: {e}")
+            self.log(f"Error in connect: {e}")
             raise
 
     def disconnect(self):
@@ -49,200 +142,118 @@ class SFTP:
                 self.sftp_client.close()
             if self.ssh_client:
                 self.ssh_client.close()
-            logging.info("Connection closed.")
+            self.log("Connection closed.")
         except Exception as e:
-            logging.error(f"Error in disconnect: {e}")
+            self.log(f"Error in disconnect: {e}")
             raise
 
     def cwd(self, remote_directory: str):
         """Change the working directory on the remote server."""
         try:
             self.sftp_client.chdir(remote_directory)
-            logging.info(f"Remote directory changed to {remote_directory}")
+            self.log(f"Changed remote directory to: {remote_directory}")
         except Exception as e:
-            logging.error(f"Error in cwd: {e}")
+            self.log(f"Error in cwd({remote_directory}): {e}")
+            raise
+
+    def listdir(self):
+        """List files in the current directory on the remote server."""
+        try:
+            files = self.sftp_client.listdir()
+            self.log(f"Directory listing: {files}")
+            return files
+        except Exception as e:
+            self.log(f"Error in listdir: {e}")
             raise
 
     def get(self, remote_file: str, local_file: str):
         """Download a file from the remote server."""
         try:
             self.sftp_client.get(remote_file, local_file)
-            logging.info(f"File {remote_file} downloaded as {local_file}")
+            self.log(f"Downloaded: {remote_file} -> {local_file}")
         except Exception as e:
-            logging.error(f"Error in get: {e}")
+            self.log(f"Error in get: {e}")
             raise
 
     def put(self, local_file: str, remote_file: str):
         """Upload a file to the remote server."""
         try:
             self.sftp_client.put(local_file, remote_file)
-            logging.info(f"File {local_file} uploaded as {remote_file}")
+            self.log(f"Uploaded: {local_file} -> {remote_file}")
         except Exception as e:
-            logging.error(f"Error in put: {e}")
-            raise
-
-    def listdir(self):
-        """List files in the current directory on the remote server."""
-        try:
-            return self.sftp_client.listdir()
-        except Exception as e:
-            logging.error(f"Error in listdir: {e}")
+            self.log(f"Error in put: {e}")
             raise
 
     def remove(self, remote_file: str):
         """Remove a file from the remote server."""
         try:
             self.sftp_client.remove(remote_file)
-            logging.info(f"File {remote_file} removed from the server")
+            self.log(f"Removed remote file: {remote_file}")
         except Exception as e:
-            logging.error(f"Error in remove: {e}")
+            self.log(f"Error in remove: {e}")
             raise
 
     def rename(self, source_path: str, destination_path: str):
         """Rename (or move) a file on the remote server."""
         try:
             self.sftp_client.rename(source_path, destination_path)
-            logging.info(f"File moved from {source_path} to {destination_path}")
+            self.log(f"Moved/Renamed: {source_path} -> {destination_path}")
         except Exception as e:
-            logging.error(f"Error in rename: {e}")
+            self.log(f"Error in rename: {e}")
             raise
 
     def move_files_to_history(self, remote_file: str, add_timestamp=True):
         """Move files to the 'history' directory on the remote server."""
         try:
-            listdir = self.listdir()
-            if 'history' not in listdir:
+            files = self.listdir()
+            if 'history' not in files:
                 self.sftp_client.mkdir('history')
-                logging.info("Created 'history' directory.")
-
-            source_path = remote_file
+                self.log("Created 'history' directory on remote.")
 
             if add_timestamp:
                 destination_path = f"history/{self.get_timestamp()}_{remote_file}"
             else:
                 destination_path = f"history/{remote_file}"
 
-            logging.info(f"Renaming {source_path} to {destination_path}")
-            self.rename(source_path, destination_path)
+            self.rename(remote_file, destination_path)
         except Exception as e:
-            logging.error(f"Error in move_files_to_history: {e}")
+            self.log(f"Error in move_files_to_history: {e}")
             raise
 
     def get_timestamp(self):
-        """Return the current timestamp in the format 'YYYY-MM-DD_HHMM' in Finland timezone."""
+        """Return the current timestamp in the format 'YYYY-MM-DD_HH%M' in Finland timezone."""
         finland_tz = pytz.timezone('Europe/Helsinki')
         finland_time = datetime.datetime.now(finland_tz)
         return finland_time.strftime("%Y-%m-%d_%H%M")
 
 
-def convert_csv_to_xlsx(csv_file_path, encoding='utf-8'):
+def convert_csv_to_xlsx(csv_file_path, encoding='utf-8', log_func=None):
     """
-    Converts a semicolon-delimited CSV file to an XLSX file, handling special characters and European number formatting.
-
-    Parameters:
-    - csv_file_path (str): Path to the CSV file.
-    - encoding (str): Encoding of the CSV file (default is 'utf-8').
+    Converts a semicolon-delimited CSV file to an XLSX file, 
+    handling special characters and European number formatting.
 
     Returns:
-    - str: Path to the generated XLSX file.
+    - (xlsx_path, success_flag)
     """
-    conversion_success = False
+    if log_func is None:
+        # fallback if somehow not provided
+        log_func = print
+    
+    success = False
     try:
-        # Ensure the file exists and has a .csv extension
         if not os.path.exists(csv_file_path):
             raise FileNotFoundError(f"File not found: {csv_file_path}")
         if not csv_file_path.endswith('.csv'):
-            raise ValueError("The provided file is not a CSV file.")
+            raise ValueError("Provided file is not a CSV.")
 
-        # Read the CSV file with semicolon delimiter and correct encoding
         df = pd.read_csv(csv_file_path, encoding=encoding, delimiter=';', decimal=',')
-
-        # Generate the XLSX file path
         xlsx_file_path = os.path.splitext(csv_file_path)[0] + '.xlsx'
-
-        # Save as XLSX
         df.to_excel(xlsx_file_path, index=False)
-        
-        conversion_success = True
-        logging.info(f"Converted {csv_file_path} to {xlsx_file_path}")
-        return xlsx_file_path, conversion_success
+
+        log_func(f"Converted: {csv_file_path} -> {xlsx_file_path}")
+        success = True
+        return xlsx_file_path, success
 
     except Exception as e:
-        logging.error(f"Error during conversion: {e} \n Terminating...")
-        return "Error, no path", conversion_success
-
-
-def main(mytimer: func.TimerRequest) -> None:
-    utc_timestamp = datetime.datetime.utcnow().replace(
-        tzinfo=datetime.timezone.utc
-    ).isoformat()
-    
-    if mytimer.past_due:
-        logging.info('The timer is past due!')
-
-    # Create SFTP instance with Paramiko
-    vitec = SFTP(
-        os.getenv("vitec_hostname"),
-        os.getenv("vitec_username"),
-        os.getenv("vitec_password"),
-        int(os.getenv("vitec_port", 22))  # ensure port is int
-    )
-
-    # Navigate to the correct directory
-    vitec.cwd("JANNE")
-    vitec.cwd("vantaa_tallenna_liite")
-
-    # List available CSV files
-    csvlistdir = vitec.listdir()
-    logging.info(f"Current directory listing: {csvlistdir}")
-
-    csv_files = [file for file in csvlistdir if file.endswith('.csv')]
-    local_paths = list()
-    new_xlsx_files = list()
-
-    if csv_files:
-        logging.info(f"{len(csv_files)} .csv file(s) found. Downloading...")
-        for csv_file in csv_files:
-            local_path = os.path.join(tempfile.gettempdir(), csv_file)
-            vitec.get(csv_file, local_path)
-            local_paths.append(local_path)
-        
-        
-        for local_path in local_paths:
-            xlsx_path, conversion_success = convert_csv_to_xlsx(local_path, encoding='ISO-8859-1')
-            
-            if conversion_success:
-                new_xlsx_files.append(xlsx_path)
-            else:
-                return # Terminate if conversion failed
-        
-        for csv_file in csv_files:    
-            vitec.move_files_to_history(csv_file)
-    else:
-        logging.info("No .csv files found, terminating...")
-        vitec.disconnect()
-        return
-
-    # Navigate to 'xlsx' folder
-    vitec.cwd("xlsx")
-    xlsxlistdir = vitec.listdir()
-    old_xlsx_files = [file for file in xlsxlistdir if file.endswith('.xlsx')]
-
-    if old_xlsx_files:
-        logging.info(f"{len(old_xlsx_files)} old .xlsx files found: {old_xlsx_files}")
-        logging.info(f"Moving {len(old_xlsx_files)} old .xlsx files to history.")
-        for xlsx_file in old_xlsx_files:
-            vitec.move_files_to_history(xlsx_file, False)
-    else:
-        logging.info("No old .xlsx files found.")
-
-    # Upload new XLSX files (with a timestamp prefix)
-    for xlsx_file in new_xlsx_files:
-        if xlsx_file:  # Ensure conversion succeeded
-            vitec.put(
-                xlsx_file,
-                f"{vitec.get_timestamp()}_{os.path.basename(xlsx_file)}"
-            )
-
-    vitec.disconnect()
-    logging.info('Python timer trigger function ran at %s', utc_timestamp)
+        log_func(f"Error converting {csv_file_path} to XLSX: {e}")
+        return "Error, no path", success
