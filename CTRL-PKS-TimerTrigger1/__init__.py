@@ -146,6 +146,7 @@ def convert_csv_to_xlsx(csv_file_path, encoding='utf-8'):
     Returns:
     - str: Path to the generated XLSX file.
     """
+    conversion_success = False
     try:
         # Ensure the file exists and has a .csv extension
         if not os.path.exists(csv_file_path):
@@ -161,12 +162,14 @@ def convert_csv_to_xlsx(csv_file_path, encoding='utf-8'):
 
         # Save as XLSX
         df.to_excel(xlsx_file_path, index=False)
+        
+        coversion_success = True
         logging.info(f"Converted {csv_file_path} to {xlsx_file_path}")
-        return xlsx_file_path
+        return xlsx_file_path, conversion_success
 
     except Exception as e:
-        logging.error(f"Error during conversion: {e}")
-        return None
+        logging.error(f"Error during conversion: {e} \n Terminating...")
+        return conversion_success
 
 
 def main(mytimer: func.TimerRequest) -> None:
@@ -194,6 +197,7 @@ def main(mytimer: func.TimerRequest) -> None:
     logging.info(f"Current directory listing: {csvlistdir}")
 
     csv_files = [file for file in csvlistdir if file.endswith('.csv')]
+    local_paths = list()
     new_xlsx_files = list()
 
     if csv_files:
@@ -201,9 +205,19 @@ def main(mytimer: func.TimerRequest) -> None:
         for csv_file in csv_files:
             local_path = os.path.join(tempfile.gettempdir(), csv_file)
             vitec.get(csv_file, local_path)
+            local_paths.append(local_path)
+        
+        
+        for local_path in local_paths:
+            xlsx_path, conversion_success = convert_csv_to_xlsx(local_path, encoding='ISO-8859-1')
+            
+            if conversion_success:
+                new_xlsx_files.append(xlsx_path)
+            else:
+                return # Terminate if conversion failed
+        
+        for csv_file in csv_files:    
             vitec.move_files_to_history(csv_file)
-            xlsx_path = convert_csv_to_xlsx(local_path, encoding='ISO-8859-1')
-            new_xlsx_files.append(xlsx_path)
     else:
         logging.info("No .csv files found, terminating...")
         vitec.disconnect()

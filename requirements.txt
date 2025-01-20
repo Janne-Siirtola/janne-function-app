@@ -2,3 +2,4 @@ azure.functions
 paramiko
 pandas
 pytz
+openpyxl
