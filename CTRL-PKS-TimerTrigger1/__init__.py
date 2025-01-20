@@ -163,13 +163,13 @@ def convert_csv_to_xlsx(csv_file_path, encoding='utf-8'):
         # Save as XLSX
         df.to_excel(xlsx_file_path, index=False)
         
-        coversion_success = True
+        conversion_success = True
         logging.info(f"Converted {csv_file_path} to {xlsx_file_path}")
         return xlsx_file_path, conversion_success
 
     except Exception as e:
         logging.error(f"Error during conversion: {e} \n Terminating...")
-        return conversion_success
+        return "Error, no path", conversion_success
 
 
 def main(mytimer: func.TimerRequest) -> None:
