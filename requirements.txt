@@ -3,3 +3,5 @@ paramiko
 pandas
 pytz
 openpyxl
+msal
+requests
