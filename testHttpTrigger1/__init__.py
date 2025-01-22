@@ -1,5 +1,3 @@
-# function_app.py
-
 import datetime
 import logging
 import azure.functions as func
@@ -17,8 +15,7 @@ import requests
 import json
 import msal
 
-
-def main(mytimer: func.TimerRequest) -> None:
+def main(req: func.HttpRequest) -> func.HttpResponse:
     debug_mode = os.environ.get("DEBUG_MODE")
     # We'll collect all logs in this list:
     log_messages = []
