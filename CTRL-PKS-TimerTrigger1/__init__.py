@@ -95,7 +95,7 @@ def main(mytimer: func.TimerRequest) -> None:
         # 2A. Ensure 'Arkisto' folder exists within "002 Vantaa"
         main_folder = "Testi"  # Relative to Drive root
         # "002 Vantaa/Arkisto"  # Relative to Drive root
-        archive_folder = "Arkisto"
+        archive_folder = f"{main_folder}/Arkisto"
         sharepoint.create_folder_if_not_exists(folder_path=archive_folder)
 
         # 2B. Move existing XLSX files in "002 Vantaa" to "Arkisto"
