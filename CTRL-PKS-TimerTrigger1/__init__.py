@@ -33,7 +33,7 @@ def main(mytimer: func.TimerRequest) -> None:
     else:
         logging.info("In Production mode")
         debug_mode = False
-        
+
     try:
         # -----------------------------
         # 1. MAIN LOGIC STARTS
@@ -42,7 +42,7 @@ def main(mytimer: func.TimerRequest) -> None:
         # 1A. Timer logic
         utc_timestamp = datetime.datetime.utcnow().replace(
             tzinfo=datetime.timezone.utc).isoformat()
-        #if mytimer.past_due:
+        # if mytimer.past_due:
         #    log("Timer is past due.")
         # 1B. Connect via Paramiko (SFTP for downloading CSV files)
         vitecSftp = SftpHandler(
@@ -113,7 +113,7 @@ def main(mytimer: func.TimerRequest) -> None:
         existing_files = sharepoint.list_files(folder_path=main_folder)
         xlsx_files_to_archive = [f["name"] for f in existing_files if f.get(
             "file") and f.get("name", "").lower().endswith('.xlsx')]
-        
+
         log(f"Found {len(xlsx_files_to_archive)} existing XLSX file(s) in '{main_folder}': {xlsx_files_to_archive}")
 
         for xlsx_file in xlsx_files_to_archive:
@@ -155,23 +155,25 @@ def main(mytimer: func.TimerRequest) -> None:
         # Optionally re-raise if you want the Azure Function to register as 'failed'
         raise
 
+
 def get_timestamp():
     """Return the current timestamp in the format 'YYYY-MM-DD_HH%M' in Finland timezone."""
     finland_tz = pytz.timezone('Europe/Helsinki')
     finland_time = datetime.datetime.now(finland_tz)
     return finland_time.strftime("%Y-%m-%d_%H%M")
 
+
 def convert_csv_to_xlsx(csv_file_path, encoding='utf-8', log_func=None):
     """
     Converts a semicolon-delimited CSV file to an XLSX file, 
     handling special characters and European number formatting.
-    
+
     The XLSX filename will have a timestamp prepended to the original CSV filename.
-    
+
     Example:
         Input CSV: data.csv
         Output XLSX: 2025-01-21_1230_data.xlsx
-    
+
     Returns:
     - (xlsx_path, success_flag)
     """
@@ -184,41 +186,40 @@ def convert_csv_to_xlsx(csv_file_path, encoding='utf-8', log_func=None):
         # Validate CSV file existence
         if not os.path.exists(csv_file_path):
             raise FileNotFoundError(f"File not found: {csv_file_path}")
-        
+
         # Validate file extension
         if not csv_file_path.lower().endswith('.csv'):
             raise ValueError("Provided file is not a CSV.")
-    
+
         # Read the CSV file with specified encoding and delimiter
-        df = pd.read_csv(csv_file_path, encoding=encoding, delimiter=';', decimal=',')
-        
+        df = pd.read_csv(csv_file_path, encoding=encoding,
+                         delimiter=';', decimal=',')
+
         # Retrieve the current timestamp
         timestamp = get_timestamp()
-        
+
         # Extract the base name of the CSV file (e.g., 'data' from 'data.csv')
         base_name = os.path.splitext(os.path.basename(csv_file_path))[0]
-        
+
         # Create the new XLSX filename with the timestamp
         xlsx_file_name = f"{timestamp}_{base_name}.xlsx"
-        
+
         # Generate the full path for the new XLSX file in the same directory as the CSV
-        xlsx_file_path = os.path.join(os.path.dirname(csv_file_path), xlsx_file_name)
-    
+        xlsx_file_path = os.path.join(
+            os.path.dirname(csv_file_path), xlsx_file_name)
+
         # Write the DataFrame to an XLSX file
         df.to_excel(xlsx_file_path, index=False)
-    
+
         # Log the successful conversion
         log_func(f"Converted: {csv_file_path} -> {xlsx_file_path}")
         success = True
         return xlsx_file_path, success
-    
+
     except Exception as e:
         # Log any errors that occur during conversion
         log_func(f"Error converting {csv_file_path} to XLSX: {e}")
         return "Error, no path", success
-    
-
-
 
 
 class SftpHandler:
@@ -503,8 +504,8 @@ class SharePointHandler:
         }
 
         # Ensure the archive folder exists
-        #self.create_folder_if_not_exists(archive_folder)
-        
+        # self.create_folder_if_not_exists(archive_folder)
+
         # URL-encode the archive folder path
         encoded_archive_folder = urllib.parse.quote(archive_folder)
         encoded_main_folder = urllib.parse.quote(main_folder)
