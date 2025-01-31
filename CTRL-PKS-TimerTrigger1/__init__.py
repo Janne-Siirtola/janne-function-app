@@ -492,45 +492,45 @@ class SharePointHandler:
             self.log(error_msg)
             raise Exception(error_msg)
 
-def move_file_to_archive(self, file_name, archive_folder, main_folder):
-    headers = {
-        "Authorization": f"Bearer {self.access_token}",
-        "Content-Type": "application/json"
-    }
+    def move_file_to_archive(self, file_name, archive_folder, main_folder):
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
 
-    # Rename (move) the file
-    payload = {
-        "parentReference": {
-            "path": f"/drive/root:/{archive_folder}"
-        },
-        "name": file_name  # Keeps the same name
-    }
+        # Rename (move) the file
+        payload = {
+            "parentReference": {
+                "path": f"/drive/root:/{archive_folder}"
+            },
+            "name": file_name  # Keeps the same name
+        }
 
-    # Get the item ID of the file to move
-    items = self.list_files(folder_path=main_folder)
-    target_item = next(
-        (item for item in items if item["name"] == file_name), None)
+        # Get the item ID of the file to move
+        items = self.list_files(folder_path=main_folder)
+        target_item = next(
+            (item for item in items if item["name"] == file_name), None)
 
-    if not target_item:
-        error_msg = f"File named '{file_name}' not found in the current folder."
-        self.log(error_msg)
-        raise Exception(error_msg)
+        if not target_item:
+            error_msg = f"File named '{file_name}' not found in the current folder."
+            self.log(error_msg)
+            raise Exception(error_msg)
 
-    item_id = target_item["id"]
-    move_url = f"https://graph.microsoft.com/v1.0/sites/{self.site_id}/drives/{self.drive_id}/items/{item_id}"
+        item_id = target_item["id"]
+        move_url = f"https://graph.microsoft.com/v1.0/sites/{self.site_id}/drives/{self.drive_id}/items/{item_id}"
 
-    self.log(f"Moving file '{file_name}' to '{archive_folder}'.")
+        self.log(f"Moving file '{file_name}' to '{archive_folder}'.")
 
-    response = requests.patch(move_url, headers=headers, json=payload)
+        response = requests.patch(move_url, headers=headers, json=payload)
 
-    if response.status_code == 200:
-        self.log(
-            f"File '{file_name}' moved to '{archive_folder}' successfully.")
-        return response.json()
-    else:
-        error_msg = f"Failed to move file '{file_name}': {response.status_code}, {response.text}"
-        self.log(error_msg)
-        raise Exception(error_msg)
+        if response.status_code == 200:
+            self.log(
+                f"File '{file_name}' moved to '{archive_folder}' successfully.")
+            return response.json()
+        else:
+            error_msg = f"Failed to move file '{file_name}': {response.status_code}, {response.text}"
+            self.log(error_msg)
+            raise Exception(error_msg)
 
 
     def upload_file(self, local_file_path, destination_folder="002 Vantaa"):
