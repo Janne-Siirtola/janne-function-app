@@ -20,6 +20,7 @@ import msal
 
 def main(mytimer: func.TimerRequest) -> None:
     debug_mode = os.environ.get("DEBUG_MODE")
+    
     # We'll collect all logs in this list:
     log_messages = []
 
@@ -28,10 +29,12 @@ def main(mytimer: func.TimerRequest) -> None:
         log_messages.append(msg)
 
     if debug_mode == "true":
-        logging.info("DEBUG MODE ACTIVATED")
+        logging.info("-----IN DEBUG MODE-----")
+        log("-----IN DEBUG MODE-----")
         debug_mode = True
     else:
-        logging.info("In Production mode")
+        logging.info("-----IN PRODUCTION MODE-----")
+        log("-----IN PRODUCTION MODE-----")
         debug_mode = False
 
     try:
@@ -88,9 +91,7 @@ def main(mytimer: func.TimerRequest) -> None:
                     f"CSV-to-XLSX conversion failed for {local_path}")
             new_xlsx_files.append(xlsx_path)
 
-        # 1F. Move original CSVs to history
-        for csv_file in csv_files:
-            vitecSftp.move_files_to_history(csv_file)
+        
 
         # -----------------------------
         # 2. SHAREPOINT HANDLING
@@ -125,6 +126,10 @@ def main(mytimer: func.TimerRequest) -> None:
         for xlsx_file in new_xlsx_files:
             sharepoint.upload_file(
                 local_file_path=xlsx_file, destination_folder=upload_folder)
+            
+        # 1F. Move original CSVs to history
+        for csv_file in csv_files:
+            vitecSftp.move_files_to_history(csv_file)
 
         # 2D. Optionally, delete temporary local XLSX files
         for xlsx_file in new_xlsx_files:
@@ -487,63 +492,46 @@ class SharePointHandler:
             self.log(error_msg)
             raise Exception(error_msg)
 
-    def move_file_to_archive(self, file_name, archive_folder, main_folder):
-        """
-        Moves an existing XLSX file to the 'Arkisto' (Archive) folder.------------------------------------------------------------------------------------------------------------------------
+def move_file_to_archive(self, file_name, archive_folder, main_folder):
+    headers = {
+        "Authorization": f"Bearer {self.access_token}",
+        "Content-Type": "application/json"
+    }
 
-        Args:
-            file_name (str): The name of the file to move.
-            archive_folder (str, optional): The destination archive folder. Defaults to "Arkisto".
+    # Rename (move) the file
+    payload = {
+        "parentReference": {
+            "path": f"/drive/root:/{archive_folder}"
+        },
+        "name": file_name  # Keeps the same name
+    }
 
-        Returns:
-            dict: The JSON response from the Graph API containing updated file details.
-        """
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json"
-        }
+    # Get the item ID of the file to move
+    items = self.list_files(folder_path=main_folder)
+    target_item = next(
+        (item for item in items if item["name"] == file_name), None)
 
-        # Ensure the archive folder exists
-        # self.create_folder_if_not_exists(archive_folder)
+    if not target_item:
+        error_msg = f"File named '{file_name}' not found in the current folder."
+        self.log(error_msg)
+        raise Exception(error_msg)
 
-        # URL-encode the archive folder path
-        encoded_archive_folder = urllib.parse.quote(archive_folder)
-        encoded_main_folder = urllib.parse.quote(main_folder)
-        url = f"https://graph.microsoft.com/v1.0/sites/{self.site_id}/drives/{self.drive_id}/root:/{encoded_archive_folder}"
+    item_id = target_item["id"]
+    move_url = f"https://graph.microsoft.com/v1.0/sites/{self.site_id}/drives/{self.drive_id}/items/{item_id}"
 
-        # Rename (move) the file
-        payload = {
-            "parentReference": {
-                "path": f"/drive/root:/{encoded_archive_folder}"
-            },
-            "name": file_name  # Keeps the same name
-        }
+    self.log(f"Moving file '{file_name}' to '{archive_folder}'.")
 
-        # Get the item ID of the file to move
-        items = self.list_files(folder_path=main_folder)
-        target_item = next(
-            (item for item in items if item["name"] == file_name), None)
+    response = requests.patch(move_url, headers=headers, json=payload)
 
-        if not target_item:
-            error_msg = f"File named '{file_name}' not found in the current folder."
-            self.log(error_msg)
-            raise Exception(error_msg)
+    if response.status_code == 200:
+        self.log(
+            f"File '{file_name}' moved to '{archive_folder}' successfully.")
+        return response.json()
+    else:
+        error_msg = f"Failed to move file '{file_name}': {response.status_code}, {response.text}"
+        self.log(error_msg)
+        raise Exception(error_msg)
 
-        item_id = target_item["id"]
-        move_url = f"https://graph.microsoft.com/v1.0/sites/{self.site_id}/drives/{self.drive_id}/items/{item_id}"
-
-        self.log(f"Moving file '{file_name}' to '{archive_folder}'.")
-
-        response = requests.patch(move_url, headers=headers, json=payload)
-
-        if response.status_code == 200:
-            self.log(
-                f"File '{file_name}' moved to '{archive_folder}' successfully.")
-            return response.json()
-        else:
-            error_msg = f"Failed to move file '{file_name}': {response.status_code}, {response.text}"
-            self.log(error_msg)
-            raise Exception(error_msg)
 
     def upload_file(self, local_file_path, destination_folder="002 Vantaa"):
         """
