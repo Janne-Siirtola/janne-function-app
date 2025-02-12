@@ -14,12 +14,14 @@ import os
 import urllib.parse
 import logging
 import requests
-import json
 import msal
+import re
+import xlsxwriter
 
 
 def main(mytimer: func.TimerRequest) -> None:
-    debug_mode = os.environ.get("DEBUG_MODE")
+    DEBUG_MODE = os.environ.get("DEBUG_MODE")
+    COMBINE_FILES = os.environ.get("COMBINE_FILES")
     
     # We'll collect all logs in this list:
     log_messages = []
@@ -28,14 +30,23 @@ def main(mytimer: func.TimerRequest) -> None:
         """Append a log string to our in-memory list of messages."""
         log_messages.append(msg)
 
-    if debug_mode == "true":
+    if DEBUG_MODE == "true":
         logging.info("-----IN DEBUG MODE-----")
         log("-----IN DEBUG MODE-----")
-        debug_mode = True
+        DEBUG_MODE = True
     else:
         logging.info("-----IN PRODUCTION MODE-----")
         log("-----IN PRODUCTION MODE-----")
-        debug_mode = False
+        DEBUG_MODE = False
+        
+    if COMBINE_FILES == "true":
+        logging.info("-----COMBINE_FILES-----")
+        log("-----COMBINE_FILES-----")
+        COMBINE_FILES = True
+    else:   
+        logging.info("-----NO COMBINE_FILES-----")
+        log("-----NO COMBINE_FILES-----")
+        COMBINE_FILES = False
 
     try:
         # -----------------------------
@@ -81,15 +92,27 @@ def main(mytimer: func.TimerRequest) -> None:
 
         # 1E. Convert CSV -> XLSX
         new_xlsx_files = []
-        for local_path in local_paths:
-            xlsx_path, success = convert_csv_to_xlsx(
-                local_path, encoding='ISO-8859-1', log_func=log)
+        
+        if COMBINE_FILES:
+            final_xlsx_path, success = combine_csvs_to_one_xlsx(
+                csv_files=local_paths, output_dir=tempfile.gettempdir(), encoding='ISO-8859-1', log_func=log)
             if not success:
-                # If conversion fails, stop. But still do final log.
                 vitecSftp.disconnect()
+                log(f"CSV-to-XLSX conversion failed for {local_paths}")
                 raise RuntimeError(
-                    f"CSV-to-XLSX conversion failed for {local_path}")
-            new_xlsx_files.append(xlsx_path)
+                    f"CSV-to-XLSX conversion failed for {local_paths}")
+            new_xlsx_files.append(final_xlsx_path)
+        else:
+            for local_path in local_paths:
+                xlsx_path, success = convert_csv_to_xlsx(
+                    local_path, encoding='ISO-8859-1', log_func=log)
+                if not success:
+                    # If conversion fails, stop. But still do final log.
+                    vitecSftp.disconnect()
+                    log(f"CSV-to-XLSX conversion failed for {local_path}")
+                    raise RuntimeError(
+                        f"CSV-to-XLSX conversion failed for {local_path}")
+                new_xlsx_files.append(xlsx_path)
 
         
 
@@ -101,7 +124,7 @@ def main(mytimer: func.TimerRequest) -> None:
         sharepoint = SharePointHandler(log_func=log)
 
         # 2A. Ensure 'Arkisto' folder exists within "002 Vantaa"
-        if debug_mode:
+        if DEBUG_MODE:
             main_folder = "Testi"  # Relative to Drive root
         else:
             main_folder = "002 Vantaa"
@@ -162,69 +185,224 @@ def main(mytimer: func.TimerRequest) -> None:
 
 
 def get_timestamp():
-    """Return the current timestamp in the format 'YYYY-MM-DD_HH%M' in Finland timezone."""
+    """
+    Return the current timestamp in the format 'YYYY-MM-DD_HH%M'
+    in Finland timezone.
+    """
     finland_tz = pytz.timezone('Europe/Helsinki')
     finland_time = datetime.datetime.now(finland_tz)
     return finland_time.strftime("%Y-%m-%d_%H%M")
 
-
-def convert_csv_to_xlsx(csv_file_path, encoding='utf-8', log_func=None):
+def parse_filename_parts(filename):
     """
-    Converts a semicolon-delimited CSV file to an XLSX file, 
-    handling special characters and European number formatting.
+    Given a filename like:
+      'KONTROLLI_PKS_kuljtilaus_0eur_ed7pv20250209220043.csv'
+    1) Strip off '.csv'
+    2) Remove trailing 14-digit timestamp if present.
+    3) Split on the first two underscores.
 
-    The XLSX filename will have a timestamp prepended to the original CSV filename.
+    Returns: (prefix, remainder)
 
-    Example:
-        Input CSV: data.csv
-        Output XLSX: 2025-01-21_1230_data.xlsx
+    Where prefix = 'KONTROLLI_PKS'
+          remainder = 'kuljtilaus_0eur_ed7pv'
+    """
+    base_name, _ = os.path.splitext(filename)
+    # Remove a trailing 14-digit timestamp if present
+    match = re.search(r'(.*)(\d{14})$', base_name)
+    if match:
+        base_name = match.group(1)
+    parts = base_name.split("_", 2)
+    if len(parts) < 3:
+        prefix = base_name
+        remainder = ""
+    else:
+        prefix = parts[0] + "_" + parts[1]
+        remainder = parts[2]
+    return prefix, remainder
 
-    Returns:
-    - (xlsx_path, success_flag)
+def read_csv_with_two_row_header(csv_file, encoding='utf-8'):
+    """
+    Reads a CSV that has no proper header.
+    Uses the second row (index 1) as the real header and drops the top two rows.
+    """
+    df = pd.read_csv(csv_file, encoding=encoding, delimiter=';', decimal=',', header=None)
+    new_header = df.iloc[1]
+    df = df.drop([0, 1])
+    df.columns = new_header
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def convert_csv_to_xlsx(csv_file_path, encoding='utf-8', log_func=None, prepend_timestamp=False):
+    """
+    Converts a CSV file to XLSX.
+    If `prepend_timestamp` is True, the XLSX filename gets a timestamp prepended.
+    The function also adds a checkbox column, a formula column, and conditional formatting.
     """
     if log_func is None:
-        # Fallback if no log function is provided
         log_func = print
-
     success = False
     try:
-        # Validate CSV file existence
         if not os.path.exists(csv_file_path):
             raise FileNotFoundError(f"File not found: {csv_file_path}")
-
-        # Validate file extension
         if not csv_file_path.lower().endswith('.csv'):
             raise ValueError("Provided file is not a CSV.")
 
-        # Read the CSV file with specified encoding and delimiter
-        df = pd.read_csv(csv_file_path, encoding=encoding,
-                         delimiter=';', decimal=',')
+        # Read CSV with two-row header logic
+        df = pd.read_csv(csv_file_path, encoding=encoding, delimiter=';', decimal=',', header=None)
+        new_header = df.iloc[1]
+        df = df.drop([0, 1])
+        df.columns = new_header
+        df.reset_index(drop=True, inplace=True)
 
-        # Retrieve the current timestamp
-        timestamp = get_timestamp()
-
-        # Extract the base name of the CSV file (e.g., 'data' from 'data.csv')
+        # Determine base name and optionally prepend timestamp
         base_name = os.path.splitext(os.path.basename(csv_file_path))[0]
+        # Remove trailing 14-digit timestamp if present
+        match = re.search(r'(.*)(\d{14})$', base_name)
+        if match:
+            base_name = match.group(1)
+        if prepend_timestamp:
+            timestamp = get_timestamp()
+            xlsx_file_name = f"{timestamp}_{base_name}.xlsx"
+        else:
+            xlsx_file_name = f"{base_name}.xlsx"
+        xlsx_file_path = os.path.join(os.path.dirname(csv_file_path), xlsx_file_name)
 
-        # Create the new XLSX filename with the timestamp
-        xlsx_file_name = f"{timestamp}_{base_name}.xlsx"
+        # Write to XLSX with xlsxwriter engine
+        with pd.ExcelWriter(xlsx_file_path, engine='xlsxwriter') as writer:
+            df.to_excel(writer, index=False, sheet_name='Sheet1')
+            workbook = writer.book
+            worksheet = writer.sheets['Sheet1']
 
-        # Generate the full path for the new XLSX file in the same directory as the CSV
-        xlsx_file_path = os.path.join(
-            os.path.dirname(csv_file_path), xlsx_file_name)
+            num_data_rows = len(df)
+            num_data_cols = len(df.columns)
 
-        # Write the DataFrame to an XLSX file
-        df.to_excel(xlsx_file_path, index=False)
+            # New columns for checkboxes and status/formula
+            checkbox_col = num_data_cols
+            formula_col = num_data_cols + 1
 
-        # Log the successful conversion
+            # Write headers for new columns
+            worksheet.write(0, checkbox_col, "Checkbox")
+            worksheet.write(0, formula_col, "Status")
+
+            # Insert checkboxes and formulas for each data row
+            for row in range(1, num_data_rows + 1):
+                worksheet.insert_checkbox(row, checkbox_col, {'checked': False})
+                checkbox_cell = xlsxwriter.utility.xl_rowcol_to_cell(row, checkbox_col)
+                formula = f'=IF({checkbox_cell}, "Checked", "Unchecked")'
+                worksheet.write_formula(row, formula_col, formula)
+
+            # Apply conditional formatting to highlight rows when "Checked"
+            start_row = 1
+            end_row = num_data_rows
+            start_col = 0
+            end_col = formula_col
+            data_range = xlsxwriter.utility.xl_range(start_row, start_col, end_row, end_col)
+            formula_col_letter = xlsxwriter.utility.xl_col_to_name(formula_col)
+            cond_formula = f'=${formula_col_letter}2="Checked"'
+            green_format = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100'})
+            worksheet.conditional_format(data_range, {
+                'type': 'formula',
+                'criteria': cond_formula,
+                'format': green_format
+            })
+
+            # Optionally hide the formula column
+            worksheet.set_column(formula_col, formula_col, None, None, {'hidden': True})
+
         log_func(f"Converted: {csv_file_path} -> {xlsx_file_path}")
         success = True
         return xlsx_file_path, success
 
     except Exception as e:
-        # Log any errors that occur during conversion
         log_func(f"Error converting {csv_file_path} to XLSX: {e}")
         return "Error, no path", success
+
+def combine_csvs_to_one_xlsx(csv_files, output_dir, encoding='utf-8', log_func=None):
+    """
+    Combines multiple CSV files into one XLSX workbook.
+    The workbook is named as: {timestamp}_{prefix}.xlsx where prefix is determined
+    from the first CSV file (everything before the second underscore).
+    Each worksheet is named based on the portion after the second underscore.
+    """
+    if log_func is None:
+        log_func = print
+
+    try:
+        if not csv_files:
+            raise ValueError("No CSV files provided.")
+        
+        log_func("Starting to combine CSV files into one XLSX workbook.")
+        
+        # Use the first CSV to determine the common prefix for naming the workbook.
+        first_file = os.path.basename(csv_files[0])
+        prefix, _ = parse_filename_parts(first_file)
+        timestamp_str = get_timestamp()
+        final_xlsx_name = f"{timestamp_str}_{prefix}.xlsx"
+        final_xlsx_path = os.path.join(output_dir, final_xlsx_name)
+        
+        log_func(f"Final XLSX file will be: {final_xlsx_path}")
+        
+        with pd.ExcelWriter(final_xlsx_path, engine='xlsxwriter') as writer:
+            workbook = writer.book
+            
+            for csv_file in csv_files:
+                try:
+                    csv_base = os.path.basename(csv_file)
+                    _, remainder = parse_filename_parts(csv_base)
+                    sheet_name = remainder if remainder else "Sheet"
+                    
+                    log_func(f"Processing CSV: {csv_file} for worksheet '{sheet_name}'")
+                    
+                    df = read_csv_with_two_row_header(csv_file, encoding=encoding)
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+                    worksheet = writer.sheets[sheet_name]
+                    
+                    num_data_rows = len(df)
+                    num_data_cols = len(df.columns)
+                    
+                    log_func(f"Worksheet '{sheet_name}' has {num_data_rows} rows and {num_data_cols} columns.")
+                    
+                    checkbox_col = num_data_cols
+                    formula_col = num_data_cols + 100
+                    
+                    worksheet.write(0, checkbox_col, "Checkbox")
+                    worksheet.write(0, formula_col, "Status")
+                    
+                    for row in range(1, num_data_rows + 1):
+                        worksheet.insert_checkbox(row, checkbox_col, False)
+                        checkbox_cell = xlsxwriter.utility.xl_rowcol_to_cell(row, checkbox_col)
+                        formula = f'=IF({checkbox_cell}, "Checked", "Unchecked")'
+                        worksheet.write_formula(row, formula_col, formula)
+                    
+                    start_row = 1
+                    end_row = num_data_rows
+                    start_col = 0
+                    end_col = checkbox_col
+                    data_range = xlsxwriter.utility.xl_range(start_row, start_col, end_row, end_col)
+                    formula_col_letter = xlsxwriter.utility.xl_col_to_name(formula_col)
+                    cond_formula = f'=${formula_col_letter}2="Checked"'
+                    green_format = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100'})
+                    
+                    worksheet.conditional_format(data_range, {
+                        'type': 'formula',
+                        'criteria': cond_formula,
+                        'format': green_format
+                    })
+                    
+                    worksheet.set_column(formula_col, formula_col, None, None, {'hidden': True})
+                    
+                    log_func(f"Finished processing worksheet '{sheet_name}'.")
+                
+                except Exception as inner_error:
+                    log_func(f"Error processing CSV file '{csv_file}': {inner_error}")
+                    raise
+        
+        log_func("Successfully combined CSV files into one XLSX workbook.")
+        return final_xlsx_path, True
+
+    except Exception as e:
+        log_func(f"Error in combine_csvs_to_one_xlsx: {e}")
+        raise
 
 
 class SftpHandler:
