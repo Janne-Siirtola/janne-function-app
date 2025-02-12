@@ -6,5 +6,4 @@ openpyxl
 msal
 requests
 azure.storage.blob
-re
 xlsxwriter
