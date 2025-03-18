@@ -49,70 +49,71 @@ def main(mytimer: func.TimerRequest) -> None:
         COMBINE_FILES = False
 
     try:
-        # -----------------------------
-        # 1. MAIN LOGIC STARTS
-        # -----------------------------
+        if False:
+            # -----------------------------
+            # 1. MAIN LOGIC STARTS
+            # -----------------------------
 
-        # 1A. Timer logic
-        utc_timestamp = datetime.datetime.utcnow().replace(
-            tzinfo=datetime.timezone.utc).isoformat()
-        # if mytimer.past_due:
-        #    log("Timer is past due.")
-        # 1B. Connect via Paramiko (SFTP for downloading CSV files)
-        vitecSftp = SftpHandler(
-            hostname=os.getenv("vitec_hostname"),
-            username=os.getenv("vitec_username"),
-            password=os.getenv("vitec_password"),
-            port=int(os.getenv("vitec_port", 22)),
-            log_func=log  # pass in our log function
-        )
+            # 1A. Timer logic
+            utc_timestamp = datetime.datetime.utcnow().replace(
+                tzinfo=datetime.timezone.utc).isoformat()
+            # if mytimer.past_due:
+            #    log("Timer is past due.")
+            # 1B. Connect via Paramiko (SFTP for downloading CSV files)
+            vitecSftp = SftpHandler(
+                hostname=os.getenv("vitec_hostname"),
+                username=os.getenv("vitec_username"),
+                password=os.getenv("vitec_password"),
+                port=int(os.getenv("vitec_port", 22)),
+                log_func=log  # pass in our log function
+            )
 
-        # 1C. Navigate to "JANNE/vantaa_tallenna_liite"
-        vitecSftp.cwd("JANNE")
-        vitecSftp.cwd("vantaa_tallenna_liite")
+            # 1C. Navigate to "JANNE/vantaa_tallenna_liite"
+            vitecSftp.cwd("JANNE")
+            vitecSftp.cwd("vantaa_tallenna_liite")
 
-        # 1D. List CSV files
-        csvlistdir = vitecSftp.listdir()
-        csv_files = [
-            file for file in csvlistdir if file.lower().endswith('.csv')]
-        if not csv_files:
-            log("No .csv files found. Terminating...")
-            vitecSftp.disconnect()
-            # Once done with everything successfully, output final log.
-            logging.info("\n".join(log_messages))
-            return
-
-        log(f"Found {len(csv_files)} CSV file(s): {csv_files}")
-
-        local_paths = []
-        for csv_file in csv_files:
-            local_path = os.path.join(tempfile.gettempdir(), csv_file)
-            vitecSftp.get(csv_file, local_path)
-            local_paths.append(local_path)
-
-        # 1E. Convert CSV -> XLSX
-        new_xlsx_files = []
-        
-        if COMBINE_FILES:
-            final_xlsx_path, success = combine_csvs_to_one_xlsx(
-                csv_files=local_paths, output_dir=tempfile.gettempdir(), encoding='ISO-8859-1', log_func=log)
-            if not success:
+            # 1D. List CSV files
+            csvlistdir = vitecSftp.listdir()
+            csv_files = [
+                file for file in csvlistdir if file.lower().endswith('.csv')]
+            if not csv_files:
+                log("No .csv files found. Terminating...")
                 vitecSftp.disconnect()
-                log(f"CSV-to-XLSX conversion failed for {local_paths}")
-                raise RuntimeError(
-                    f"CSV-to-XLSX conversion failed for {local_paths}")
-            new_xlsx_files.append(final_xlsx_path)
-        else:
-            for local_path in local_paths:
-                xlsx_path, success = convert_csv_to_xlsx(
-                    local_path, encoding='ISO-8859-1', log_func=log)
+                # Once done with everything successfully, output final log.
+                logging.info("\n".join(log_messages))
+                return
+
+            log(f"Found {len(csv_files)} CSV file(s): {csv_files}")
+
+            local_paths = []
+            for csv_file in csv_files:
+                local_path = os.path.join(tempfile.gettempdir(), csv_file)
+                vitecSftp.get(csv_file, local_path)
+                local_paths.append(local_path)
+
+            # 1E. Convert CSV -> XLSX
+            new_xlsx_files = []
+            
+            if COMBINE_FILES:
+                final_xlsx_path, success = combine_csvs_to_one_xlsx(
+                    csv_files=local_paths, output_dir=tempfile.gettempdir(), encoding='ISO-8859-1', log_func=log)
                 if not success:
-                    # If conversion fails, stop. But still do final log.
                     vitecSftp.disconnect()
-                    log(f"CSV-to-XLSX conversion failed for {local_path}")
+                    log(f"CSV-to-XLSX conversion failed for {local_paths}")
                     raise RuntimeError(
-                        f"CSV-to-XLSX conversion failed for {local_path}")
-                new_xlsx_files.append(xlsx_path)
+                        f"CSV-to-XLSX conversion failed for {local_paths}")
+                new_xlsx_files.append(final_xlsx_path)
+            else:
+                for local_path in local_paths:
+                    xlsx_path, success = convert_csv_to_xlsx(
+                        local_path, encoding='ISO-8859-1', log_func=log)
+                    if not success:
+                        # If conversion fails, stop. But still do final log.
+                        vitecSftp.disconnect()
+                        log(f"CSV-to-XLSX conversion failed for {local_path}")
+                        raise RuntimeError(
+                            f"CSV-to-XLSX conversion failed for {local_path}")
+                    new_xlsx_files.append(xlsx_path)
 
         
 
@@ -135,38 +136,56 @@ def main(mytimer: func.TimerRequest) -> None:
         # 2B. Move existing XLSX files in "002 Vantaa" to "Arkisto"
         # List files in "002 Vantaa"
         existing_files = sharepoint.list_files(folder_path=main_folder)
-        xlsx_files_to_archive = [f["name"] for f in existing_files if f.get(
-            "file") and f.get("name", "").lower().endswith('.xlsx')]
 
-        log(f"Found {len(xlsx_files_to_archive)} existing XLSX file(s) in '{main_folder}': {xlsx_files_to_archive}")
+        # Filter only XLSX files
+        xlsx_items = [
+            f for f in existing_files 
+            if f.get("file") and f.get("name", "").lower().endswith('.xlsx')
+        ]
 
-        for xlsx_file in xlsx_files_to_archive:
-            sharepoint.move_file_to_archive(
-                xlsx_file, archive_folder, main_folder)
+        xlsx_filenames = [item["name"] for item in xlsx_items]
+        log(f"Found {len(xlsx_filenames)} existing XLSX file(s) in '{main_folder}': {xlsx_filenames}")
 
-        # 2C. Upload new XLSX files to "002 Vantaa"
-        upload_folder = main_folder  # Destination folder in SharePoint
-        for xlsx_file in new_xlsx_files:
-            sharepoint.upload_file(
-                local_file_path=xlsx_file, destination_folder=upload_folder)
-            
-        # 1F. Move original CSVs to history
-        for csv_file in csv_files:
-            vitecSftp.move_files_to_history(csv_file)
+        # For each XLSX item, check the 'Tehty' field before moving
+        for xlsx_item in xlsx_items:
+            file_name = xlsx_item["name"]
+            item_id = xlsx_item["id"]
 
-        # 2D. Optionally, delete temporary local XLSX files
-        for xlsx_file in new_xlsx_files:
-            try:
-                os.remove(xlsx_file)
-                log(f"Deleted temporary XLSX file: {xlsx_file}")
-            except Exception as e:
-                log(f"Failed to delete temporary XLSX file '{xlsx_file}': {e}")
+            # Retrieve the list item fields (custom columns)
+            fields_data = sharepoint.get_item_list_fields(item_id)
+            tehty_value = fields_data.get("Tehty")
 
-        # -----------------------------
-        # 3. Disconnect SFTP and Finalize
-        # -----------------------------
-        vitecSftp.disconnect()
-        log(f"Python timer trigger function completed at {utc_timestamp}")
+            # Check if tehty_value is True (Yes/No column might be True/False)
+            if tehty_value is True:
+                log(f"'Tehty' == True for '{file_name}'. Moving to archive...")
+                sharepoint.move_file_to_archive(file_name, archive_folder, main_folder)
+            else:
+                log(f"'Tehty' is not True for '{file_name}' (value: {tehty_value}). Skipping.")
+
+        if False:
+            # 2C. Upload new XLSX files to "002 Vantaa"
+            upload_folder = main_folder  # Destination folder in SharePoint
+            for xlsx_file in new_xlsx_files:
+                sharepoint.upload_file(
+                    local_file_path=xlsx_file, destination_folder=upload_folder)
+                
+            # 1F. Move original CSVs to history
+            for csv_file in csv_files:
+                vitecSftp.move_files_to_history(csv_file)
+
+            # 2D. Optionally, delete temporary local XLSX files
+            for xlsx_file in new_xlsx_files:
+                try:
+                    os.remove(xlsx_file)
+                    log(f"Deleted temporary XLSX file: {xlsx_file}")
+                except Exception as e:
+                    log(f"Failed to delete temporary XLSX file '{xlsx_file}': {e}")
+
+            # -----------------------------
+            # 3. Disconnect SFTP and Finalize
+            # -----------------------------
+            vitecSftp.disconnect()
+            log(f"Python timer trigger function completed at {utc_timestamp}")
 
         # -----------------------------
         # 4. SUCCESS: OUTPUT LOG
@@ -667,6 +686,33 @@ class SharePointHandler:
             return files
         else:
             error_msg = f"Failed to list files: {response.status_code}, {response.text}"
+            self.log(error_msg)
+            raise Exception(error_msg)
+
+    def get_item_list_fields(self, item_id):
+        """
+        Retrieves the listItem fields (custom columns) for this file 
+        from the document library (like "Tehty", "Muokattu", "Muokkaaja", etc.).
+        """
+        print(f"Retrieving list item fields for item id: {item_id}...")
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Accept": "application/json"
+        }
+        url = (
+            f"https://graph.microsoft.com/v1.0/sites/{self.site_id}/drives/"
+            f"{self.drive_id}/items/{item_id}/listItem/fields"
+        )
+        print(f"Requesting fields from URL: {url}")
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            self.log("List item fields retrieved successfully.")
+            return response.json()  # e.g. {"Title": "...", "Tehty": true, ...}
+        else:
+            error_msg = (
+                f"Failed to get list item fields for id {item_id}: "
+                f"{response.status_code}, {response.text}"
+            )
             self.log(error_msg)
             raise Exception(error_msg)
 
